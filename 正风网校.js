@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         正风网校-后台挂机终结版-V15.1 (ForceRefresh)
+// @name         正风网校-后台挂机终结版-V15.2 (ShortVideoFix)
 // @namespace    http://tampermonkey.net/
-// @version      15.1
-// @description  【V15.1】修复循环开关窗问题：播放窗口关闭后强制刷新 tingke 页面。
+// @version      15.2
+// @description  【V15.2】短视频优化：总时长<10分钟的课程降为2倍速，避免频繁开关影响学时。
 // @author       Assistant
 // @match        *://*.zfwx.com/*
 // @match        *://vv.zfwx.com/*
@@ -30,7 +30,11 @@
             { threshold: 95, speed: 2.0 },
             { threshold: 85, speed: 4.0 },
             { threshold: 0, speed: 8.0 }
-        ]
+        ],
+
+        // 短视频优化：总时长低于此值时降速
+        shortVideoDuration: 600,  // 10分钟 = 600秒
+        shortVideoSpeed: 2.0      // 短视频使用 2倍速
     };
 
     const LOCK_KEY = 'zfwx_player_open';
@@ -41,10 +45,12 @@
 
     let currentSpeed = 8.0;
     let pageFullyLoaded = false;
+    let videoDurationChecked = false;  // 是否已检测视频时长
+    let isShortVideo = false;          // 是否为短视频
 
     function log(msg, color = "#00bcd4") {
         if (!CONFIG.debug) return;
-        console.log(`%c[正风V15.1]%c ${msg}`, `color:${color};font-weight:bold`, "");
+        console.log(`%c[正风V15.2]%c ${msg}`, `color:${color};font-weight:bold`, "");
         const el = document.getElementById('z-status-text');
         if (el) el.innerText = msg;
     }
@@ -445,10 +451,22 @@
         const v = document.querySelector('video');
         if (!v) return;
 
+        // 【新增】检测视频时长，短视频降速
+        if (!videoDurationChecked && v.duration && !isNaN(v.duration)) {
+            videoDurationChecked = true;
+            if (v.duration < CONFIG.shortVideoDuration) {
+                isShortVideo = true;
+                currentSpeed = CONFIG.shortVideoSpeed;
+                log(`短视频 (${Math.round(v.duration / 60)}分钟)，降为 ${currentSpeed}x`, "#FF9800");
+            } else {
+                log(`视频时长 ${Math.round(v.duration / 60)} 分钟`, "#9E9E9E");
+            }
+        }
+
         if (v.playbackRate !== currentSpeed) {
             v.playbackRate = currentSpeed;
             v.muted = true;
-            log(`设置 ${currentSpeed}x 倍速`, "#E91E63");
+            log(`设置 ${currentSpeed}x 倍速${isShortVideo ? ' (短视频)' : ''}`, "#E91E63");
             updateSpeedDisplay(currentSpeed);
         }
 
