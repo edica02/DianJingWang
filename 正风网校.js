@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         正风网校-后台挂机终结版-V16.0 (SpeedControl)
+// @name         正风网校-后台挂机终结版-V16.1 (ButtonFix)
 // @namespace    http://tampermonkey.net/
-// @version      16.0
-// @description  【V16.0】默认2倍速，控制面板可手动切换2/4/8倍速。
+// @version      16.1
+// @description  【V16.1】修复倍速按钮点击无效问题。
 // @author       Assistant
 // @match        *://*.zfwx.com/*
 // @match        *://vv.zfwx.com/*
@@ -264,11 +264,10 @@
             <div style="margin:8px 0;">
                 <span style="margin-right:8px;">切换:</span>
                 ${CONFIG.availableSpeeds.map(s => `
-                    <button id="z-speed-btn-${s}" 
+                    <button id="z-speed-btn-${s}" data-speed="${s}"
                         style="margin:2px;padding:4px 12px;border:none;border-radius:4px;cursor:pointer;
                                background:${s === currentUserSpeed ? '#FF5722' : '#444'};
-                               color:${s === currentUserSpeed ? '#fff' : '#aaa'};"
-                        onclick="window.zfwxSetSpeed(${s})">${s}x</button>
+                               color:${s === currentUserSpeed ? '#fff' : '#aaa'};">${s}x</button>
                 `).join('')}
             </div>
             <div style="margin:4px 0;">窗口: <span id="z-count-text" style="color:#03A9F4">0</span></div>
@@ -276,8 +275,13 @@
         `;
         document.body.appendChild(div);
 
-        // 暴露全局函数供按钮调用
-        window.zfwxSetSpeed = setUserSpeed;
+        // 使用 addEventListener 绑定事件（避免 CSP 限制）
+        CONFIG.availableSpeeds.forEach(s => {
+            const btn = document.getElementById(`z-speed-btn-${s}`);
+            if (btn) {
+                btn.addEventListener('click', () => setUserSpeed(s));
+            }
+        });
     }
 
     function updateSpeedDisplay(speed) {
