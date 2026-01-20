@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         正风网校-后台挂机终结版-V15.2 (ShortVideoFix)
+// @name         正风网校-后台挂机终结版-V16.0 (SpeedControl)
 // @namespace    http://tampermonkey.net/
-// @version      15.2
-// @description  【V15.2】短视频优化：总时长<10分钟的课程降为2倍速，避免频繁开关影响学时。
+// @version      16.0
+// @description  【V16.0】默认2倍速，控制面板可手动切换2/4/8倍速。
 // @author       Assistant
 // @match        *://*.zfwx.com/*
 // @match        *://vv.zfwx.com/*
@@ -25,32 +25,37 @@
         minDelayAfterRefresh: 3000,
         maxDelayAfterRefresh: 15000,
 
-        // 动态倍速配置
+        // 默认倍速改为 2 倍
+        defaultSpeed: 2.0,
+        availableSpeeds: [2, 4, 8],
+
+        // 动态倍速配置（高进度时降速）
         speedTiers: [
             { threshold: 95, speed: 2.0 },
-            { threshold: 85, speed: 4.0 },
-            { threshold: 0, speed: 8.0 }
+            { threshold: 85, speed: 2.0 },  // 统一降速处理
+            { threshold: 0, speed: 2.0 }    // 默认 2 倍
         ],
 
-        // 短视频优化：总时长低于此值时降速
-        shortVideoDuration: 600,  // 10分钟 = 600秒
-        shortVideoSpeed: 2.0      // 短视频使用 2倍速
+        // 短视频优化
+        shortVideoDuration: 600,
+        shortVideoSpeed: 2.0
     };
 
     const LOCK_KEY = 'zfwx_player_open';
     const HEARTBEAT_KEY = 'zfwx_player_heartbeat';
     const PROGRESS_KEY = 'zfwx_player_progress';
     const PLAYER_COUNT_KEY = 'zfwx_player_count';
-    const NEED_REFRESH_KEY = 'zfwx_need_refresh';  // 【新增】刷新信号
+    const NEED_REFRESH_KEY = 'zfwx_need_refresh';
+    const SPEED_KEY = 'zfwx_user_speed';  // 用户手动设置的速度
 
-    let currentSpeed = 8.0;
+    let currentSpeed = CONFIG.defaultSpeed;
     let pageFullyLoaded = false;
-    let videoDurationChecked = false;  // 是否已检测视频时长
-    let isShortVideo = false;          // 是否为短视频
+    let videoDurationChecked = false;
+    let isShortVideo = false;
 
     function log(msg, color = "#00bcd4") {
         if (!CONFIG.debug) return;
-        console.log(`%c[正风V15.2]%c ${msg}`, `color:${color};font-weight:bold`, "");
+        console.log(`%c[正风V16.0]%c ${msg}`, `color:${color};font-weight:bold`, "");
         const el = document.getElementById('z-status-text');
         if (el) el.innerText = msg;
     }
@@ -65,12 +70,28 @@
     }
 
     function getSpeedForProgress(progress) {
-        for (const tier of CONFIG.speedTiers) {
-            if (progress >= tier.threshold) {
-                return tier.speed;
-            }
+        // 现在默认都是 2 倍速，除非用户手动调整
+        return getUserSpeed();
+    }
+
+    // --- 用户速度设置 ---
+    function getUserSpeed() {
+        const saved = localStorage.getItem(SPEED_KEY);
+        return saved ? parseFloat(saved) : CONFIG.defaultSpeed;
+    }
+
+    function setUserSpeed(speed) {
+        localStorage.setItem(SPEED_KEY, speed.toString());
+        currentSpeed = speed;
+        updateSpeedDisplay(speed);
+        updateSpeedButtons(speed);
+
+        // 立即应用到视频
+        const v = document.querySelector('video');
+        if (v) {
+            v.playbackRate = speed;
+            log(`切换到 ${speed}x 倍速`, "#4CAF50");
         }
-        return 8.0;
     }
 
     // --- 刷新信号机制 ---
@@ -229,23 +250,49 @@
 
     // --- UI 面板 ---
     function createPanel(mode) {
-        if (document.getElementById('zfwx-v15-panel')) return;
+        if (document.getElementById('zfwx-v16-panel')) return;
         const div = document.createElement('div');
-        div.id = 'zfwx-v15-panel';
-        div.style.cssText = `position:fixed;top:60px;right:20px;width:280px;background:rgba(0,0,0,0.92);border:2px solid #009688;color:#fff;padding:12px;z-index:999999;border-radius:10px;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,0.5);`;
+        div.id = 'zfwx-v16-panel';
+        div.style.cssText = `position:fixed;top:60px;right:20px;width:280px;background:rgba(0,0,0,0.92);border:2px solid #FF5722;color:#fff;padding:12px;z-index:999999;border-radius:10px;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,0.5);`;
+
+        const currentUserSpeed = getUserSpeed();
+
         div.innerHTML = `
-            <div style="font-weight:bold;color:#009688;margin-bottom:8px;font-size:14px;">🚀 正风控制中心 V15.1</div>
+            <div style="font-weight:bold;color:#FF5722;margin-bottom:8px;font-size:14px;">🚀 正风控制中心 V16.0</div>
             <div style="margin:4px 0;">模式: <span style="color:#FFEB3B">${mode}</span></div>
-            <div style="margin:4px 0;">倍速: <span id="z-speed-text" style="color:#4CAF50">--</span></div>
+            <div style="margin:4px 0;">倍速: <span id="z-speed-text" style="color:#4CAF50">${currentUserSpeed}x</span></div>
+            <div style="margin:8px 0;">
+                <span style="margin-right:8px;">切换:</span>
+                ${CONFIG.availableSpeeds.map(s => `
+                    <button id="z-speed-btn-${s}" 
+                        style="margin:2px;padding:4px 12px;border:none;border-radius:4px;cursor:pointer;
+                               background:${s === currentUserSpeed ? '#FF5722' : '#444'};
+                               color:${s === currentUserSpeed ? '#fff' : '#aaa'};"
+                        onclick="window.zfwxSetSpeed(${s})">${s}x</button>
+                `).join('')}
+            </div>
             <div style="margin:4px 0;">窗口: <span id="z-count-text" style="color:#03A9F4">0</span></div>
             <div style="margin:4px 0;">状态: <span id="z-status-text" style="color:#8BC34A">初始化...</span></div>
         `;
         document.body.appendChild(div);
+
+        // 暴露全局函数供按钮调用
+        window.zfwxSetSpeed = setUserSpeed;
     }
 
     function updateSpeedDisplay(speed) {
         const el = document.getElementById('z-speed-text');
         if (el) el.innerText = `${speed}x`;
+    }
+
+    function updateSpeedButtons(activeSpeed) {
+        CONFIG.availableSpeeds.forEach(s => {
+            const btn = document.getElementById(`z-speed-btn-${s}`);
+            if (btn) {
+                btn.style.background = s === activeSpeed ? '#FF5722' : '#444';
+                btn.style.color = s === activeSpeed ? '#fff' : '#aaa';
+            }
+        });
     }
 
     function updateCountDisplay() {
@@ -258,20 +305,17 @@
     // ============================================================
     async function runTingkeMode() {
         createPanel('TINGKE');
-        log("控制中心启动 (强制刷新模式)", "#009688");
+        log("控制中心启动 (可调速)", "#FF5722");
 
-        // 等待页面加载
         await waitForPageReady();
         pageFullyLoaded = true;
 
-        // 启动主循环
         tingkeLoop();
         setInterval(tingkeLoop, CONFIG.tingkeScanInterval);
 
-        // 【新增】监听 localStorage 变化，实时响应刷新信号
         window.addEventListener('storage', (e) => {
             if (e.key === NEED_REFRESH_KEY && e.newValue) {
-                log("收到刷新信号，3秒后刷新...", "#009688");
+                log("收到刷新信号，3秒后刷新...", "#FF5722");
                 setTimeout(() => location.reload(), 3000);
             }
         });
@@ -285,41 +329,36 @@
 
         updateCountDisplay();
 
-        // 【新增】检查是否需要刷新（播放窗口正常关闭时设置的信号）
         if (checkAndClearNeedRefresh()) {
-            log("检测到刷新信号，3秒后刷新...", "#009688");
+            log("检测到刷新信号，3秒后刷新...", "#FF5722");
             setTimeout(() => location.reload(), 3000);
             return;
         }
 
         const status = checkPlayerStatus();
 
-        // 心跳超时也刷新
         if (status === 'timeout') {
-            log("心跳超时，刷新页面...", "#009688");
+            log("心跳超时，刷新页面...", "#FF5722");
             setTimeout(() => location.reload(), 1000);
             return;
         }
 
-        // 播放中
         if (status === 'playing') {
             const lastHB = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0', 10);
             const ago = Math.round((Date.now() - lastHB) / 1000);
             const storedProgress = getStoredProgress();
-            const speed = getSpeedForProgress(storedProgress);
+            const speed = getUserSpeed();
             updateSpeedDisplay(speed);
-            log(`播放中 (初始${storedProgress}%, ${speed}x, ${ago}秒前心跳)`, "#FF9800");
+            log(`播放中 (${storedProgress}%, ${speed}x, ${ago}秒前心跳)`, "#FF9800");
             return;
         }
 
-        // 防止多窗口
         if (getPlayerCount() > 0) {
             log(`已有 ${getPlayerCount()} 个窗口，等待...`, "#FF9800");
             return;
         }
 
-        // 空闲，找下一个
-        updateSpeedDisplay('--');
+        updateSpeedDisplay(getUserSpeed());
         expandAllCourses();
 
         setTimeout(() => {
@@ -362,7 +401,7 @@
             const progress = getCurProgress(row);
 
             if (progress !== -1 && progress < 100) {
-                const speed = getSpeedForProgress(progress);
+                const speed = getUserSpeed();
                 log(`发现 ${progress}% 课程，${speed}x 倍速`, "#4CAF50");
                 setPlayerLock(progress);
                 incrementPlayerCount();
@@ -392,7 +431,7 @@
 
             const progress = getCurProgress(row);
             if (progress !== -1 && progress < 100) {
-                const speed = getSpeedForProgress(progress);
+                const speed = getUserSpeed();
                 log(`(备用) ${progress}% 课程，${speed}x`, "#4CAF50");
                 setPlayerLock(progress);
                 incrementPlayerCount();
@@ -419,7 +458,7 @@
         createPanel('PLAYER');
 
         const storedProgress = getStoredProgress();
-        currentSpeed = getSpeedForProgress(storedProgress);
+        currentSpeed = getUserSpeed();
 
         log(`播放启动 (${storedProgress}%, ${currentSpeed}x)`, "#E91E63");
         updateSpeedDisplay(currentSpeed);
@@ -433,11 +472,10 @@
             updateHeartbeat();
         }, CONFIG.heartbeatInterval);
 
-        // 【关键修复】窗口关闭前：清除锁、减计数、设置刷新信号
         window.addEventListener('beforeunload', () => {
             clearPlayerLock();
             decrementPlayerCount();
-            setNeedRefresh();  // 通知 tingke 刷新
+            setNeedRefresh();
         });
 
         setInterval(() => {
@@ -451,23 +489,29 @@
         const v = document.querySelector('video');
         if (!v) return;
 
-        // 【新增】检测视频时长，短视频降速
+        // 检测视频时长
         if (!videoDurationChecked && v.duration && !isNaN(v.duration)) {
             videoDurationChecked = true;
             if (v.duration < CONFIG.shortVideoDuration) {
                 isShortVideo = true;
-                currentSpeed = CONFIG.shortVideoSpeed;
-                log(`短视频 (${Math.round(v.duration / 60)}分钟)，降为 ${currentSpeed}x`, "#FF9800");
+                if (currentSpeed > CONFIG.shortVideoSpeed) {
+                    currentSpeed = CONFIG.shortVideoSpeed;
+                    log(`短视频 (${Math.round(v.duration / 60)}分钟)，降为 ${currentSpeed}x`, "#FF9800");
+                }
             } else {
                 log(`视频时长 ${Math.round(v.duration / 60)} 分钟`, "#9E9E9E");
             }
         }
 
-        if (v.playbackRate !== currentSpeed) {
-            v.playbackRate = currentSpeed;
+        // 使用用户设置的速度（短视频除外）
+        const targetSpeed = isShortVideo ? Math.min(currentSpeed, CONFIG.shortVideoSpeed) : getUserSpeed();
+
+        if (v.playbackRate !== targetSpeed) {
+            v.playbackRate = targetSpeed;
             v.muted = true;
-            log(`设置 ${currentSpeed}x 倍速${isShortVideo ? ' (短视频)' : ''}`, "#E91E63");
-            updateSpeedDisplay(currentSpeed);
+            currentSpeed = targetSpeed;
+            log(`设置 ${targetSpeed}x 倍速${isShortVideo ? ' (短视频)' : ''}`, "#E91E63");
+            updateSpeedDisplay(targetSpeed);
         }
 
         if (typeof unsafeWindow.multiple !== 'undefined') {
@@ -523,7 +567,6 @@
             }
         }
 
-        // 检测"课程已听完"弹窗
         const bodyText = document.body.innerText;
         if (bodyText.includes('已经听完') || (bodyText.includes('听完') && (bodyText.includes('重新听') || bodyText.includes('继续听')))) {
             log("课程已完成，关闭窗口...", "#4CAF50");
