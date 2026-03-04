@@ -41,7 +41,7 @@
 ```
 
 3. 按 `Ctrl+S` 保存
-
+4. Chrome浏览器：进入 chrome://extensions/ → 找到 Tampermonkey → 点击"详情" → 确认"允许用户脚本"权限
 **方法二：手动安装**
 
 复制 [正风网校.js](./正风网校.js) 的全部内容到 Tampermonkey 编辑器中。
