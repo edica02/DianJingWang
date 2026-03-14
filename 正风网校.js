@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         正风网校-后台挂机终结版-V16.2 (SingleWindow)
+// @name         正风网校-后台挂机终结版-V16.3 (SingleWindow)
 // @namespace    http://tampermonkey.net/
-// @version      16.2
-// @description  【V16.2】严格单窗口：彻底修复多窗口并发问题。
+// @version      16.3
+// @description  【V16.3】严格单窗口：修复定时器堆积、noopener、Player自检。
 // @author       Assistant
 // @match        *://*.zfwx.com/*
 // @match        *://vv.zfwx.com/*
@@ -36,16 +36,19 @@
     const PROGRESS_KEY = 'zfwx_player_progress';
     const NEED_REFRESH_KEY = 'zfwx_need_refresh';
     const SPEED_KEY = 'zfwx_user_speed';
+    const PLAYER_INSTANCE_KEY = 'zfwx_player_instance';
 
     let currentSpeed = CONFIG.defaultSpeed;
     let pageFullyLoaded = false;
     let videoDurationChecked = false;
     let isShortVideo = false;
-    let isLaunching = false;  // 【新增】本地锁：防止同一页面内重复触发
+    let isLaunching = false;  // 本地锁：防止同一页面内重复触发
+    let pendingLaunchTimer = null;  // 【V16.3】防止 setTimeout 回调堆积
+    let myInstanceId = null;  // 【V16.3】Player 唯一实例 ID
 
     function log(msg, color = "#00bcd4") {
         if (!CONFIG.debug) return;
-        console.log(`%c[正风V16.2]%c ${msg}`, `color:${color};font-weight:bold`, "");
+        console.log(`%c[正风V16.3]%c ${msg}`, `color:${color};font-weight:bold`, "");
         const el = document.getElementById('z-status-text');
         if (el) el.innerText = msg;
     }
@@ -122,6 +125,15 @@
     }
 
     function updateHeartbeat() {
+        // 【V16.3】心跳时同时检查自己的实例 ID 是否还是活跃的
+        if (myInstanceId) {
+            const currentInstance = localStorage.getItem(PLAYER_INSTANCE_KEY);
+            if (currentInstance && currentInstance !== myInstanceId) {
+                log("实例 ID 被覆盖，自身是多余窗口，关闭", "#f44336");
+                window.close();
+                return;
+            }
+        }
         localStorage.setItem(HEARTBEAT_KEY, Date.now().toString());
     }
 
@@ -129,6 +141,7 @@
         localStorage.removeItem(LOCK_KEY);
         localStorage.removeItem(HEARTBEAT_KEY);
         localStorage.removeItem(PROGRESS_KEY);
+        localStorage.removeItem(PLAYER_INSTANCE_KEY);
     }
 
     function getStoredProgress() {
@@ -220,7 +233,7 @@
         const currentUserSpeed = getUserSpeed();
 
         div.innerHTML = `
-            <div style="font-weight:bold;color:#FF5722;margin-bottom:8px;font-size:14px;">🚀 正风控制中心 V16.2</div>
+            <div style="font-weight:bold;color:#FF5722;margin-bottom:8px;font-size:14px;">🚀 正风控制中心 V16.3</div>
             <div style="margin:4px 0;">模式: <span style="color:#FFEB3B">${mode}</span></div>
             <div style="margin:4px 0;">倍速: <span id="z-speed-text" style="color:#4CAF50">${currentUserSpeed}x</span></div>
             <div style="margin:8px 0;">
@@ -324,12 +337,15 @@
         updateSpeedDisplay(getUserSpeed());
         expandAllCourses();
 
-        // 【关键修改】不再用 setTimeout 延迟，直接执行但加本地锁
-        setTimeout(() => {
-            if (!isLaunching && !isPlayerActive()) {
-                clickFirstIncompleteLecture();
-            }
-        }, 2000);
+        // 【V16.3】用 pendingLaunchTimer 防止多个 setTimeout 回调堆积
+        if (!pendingLaunchTimer) {
+            pendingLaunchTimer = setTimeout(() => {
+                pendingLaunchTimer = null;
+                if (!isLaunching && !isPlayerActive()) {
+                    clickFirstIncompleteLecture();
+                }
+            }, 2000);
+        }
     }
 
     function expandAllCourses() {
@@ -382,7 +398,7 @@
                 const href = link.href || link.getAttribute('data-url');
 
                 if (href) {
-                    window.open(href, '_blank', 'noopener');
+                    window.open(href, '_blank');
                 } else {
                     btn.click();
                 }
@@ -411,7 +427,7 @@
 
                 const href = btn.href || btn.getAttribute('data-url');
                 if (href) {
-                    window.open(href, '_blank', 'noopener');
+                    window.open(href, '_blank');
                 } else {
                     btn.click();
                 }
@@ -429,10 +445,24 @@
     function runPlayerMode() {
         createPanel('PLAYER');
 
+        // 【V16.3】生成唯一实例 ID 并写入 localStorage
+        myInstanceId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        const existingInstance = localStorage.getItem(PLAYER_INSTANCE_KEY);
+
+        // 如果已有活跃的 Player 且心跳未超时，自己是多余的
+        if (existingInstance && isPlayerActive()) {
+            log("检测到另一个活跃的播放窗口，关闭自身", "#f44336");
+            setTimeout(() => window.close(), 1000);
+            return;
+        }
+
+        // 抢占：写入自己的实例 ID
+        localStorage.setItem(PLAYER_INSTANCE_KEY, myInstanceId);
+
         const storedProgress = getStoredProgress();
         currentSpeed = getUserSpeed();
 
-        log(`播放启动 (${storedProgress}%, ${currentSpeed}x)`, "#E91E63");
+        log(`播放启动 [${myInstanceId}] (${storedProgress}%, ${currentSpeed}x)`, "#E91E63");
         updateSpeedDisplay(currentSpeed);
 
         document.body.addEventListener('click', enableBackgroundAudio, { once: true });
@@ -440,16 +470,31 @@
         // 确保锁定
         setPlayerLock(storedProgress);
 
-        // 心跳
+        // 心跳（含实例 ID 自检）
         setInterval(() => {
             updateHeartbeat();
         }, CONFIG.heartbeatInterval);
 
         // 关闭前清除
         window.addEventListener('beforeunload', () => {
-            clearPlayerLock();
-            setNeedRefresh();
+            // 只有当自己仍是活跃实例时才清锁
+            const currentInstance = localStorage.getItem(PLAYER_INSTANCE_KEY);
+            if (!currentInstance || currentInstance === myInstanceId) {
+                clearPlayerLock();
+                setNeedRefresh();
+            }
         });
+
+        // 【V16.3】延迟 3 秒后再次确认自己是唯一实例
+        setTimeout(() => {
+            const currentInstance = localStorage.getItem(PLAYER_INSTANCE_KEY);
+            if (currentInstance !== myInstanceId) {
+                log("实例 ID 被覆盖，关闭多余窗口", "#f44336");
+                window.close();
+                return;
+            }
+            log("实例唯一性确认通过 ✓", "#4CAF50");
+        }, 3000);
 
         setInterval(() => {
             handlePopups();
@@ -533,7 +578,12 @@
             const txt = document.body.innerText;
             if (txt.includes('重复') || txt.includes('多窗口') || txt.includes('不计入')) {
                 layerBtn.click();
-                log("关闭重复听课警告", "#f44336");
+                log("检测到多窗口警告，关闭自身", "#f44336");
+                // 【V16.3】发现多窗口警告 → 说明自己是多余的，关闭
+                clearPlayerLock();
+                setNeedRefresh();
+                setTimeout(() => window.close(), 1000);
+                return;
             }
         }
 
