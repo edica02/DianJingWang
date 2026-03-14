@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         正风网校-后台挂机终结版-V16.1 (ButtonFix)
+// @name         正风网校-后台挂机终结版-V16.2 (SingleWindow)
 // @namespace    http://tampermonkey.net/
-// @version      16.1
-// @description  【V16.1】修复倍速按钮点击无效问题。
+// @version      16.2
+// @description  【V16.2】严格单窗口：彻底修复多窗口并发问题。
 // @author       Assistant
 // @match        *://*.zfwx.com/*
 // @match        *://vv.zfwx.com/*
@@ -21,22 +21,12 @@
         heartbeatInterval: 10000,
         heartbeatTimeout: 60000,
 
-        // 智能延迟配置
         minDelayAfterRefresh: 3000,
         maxDelayAfterRefresh: 15000,
 
-        // 默认倍速改为 2 倍
         defaultSpeed: 2.0,
         availableSpeeds: [2, 4, 8],
 
-        // 动态倍速配置（高进度时降速）
-        speedTiers: [
-            { threshold: 95, speed: 2.0 },
-            { threshold: 85, speed: 2.0 },  // 统一降速处理
-            { threshold: 0, speed: 2.0 }    // 默认 2 倍
-        ],
-
-        // 短视频优化
         shortVideoDuration: 600,
         shortVideoSpeed: 2.0
     };
@@ -44,18 +34,18 @@
     const LOCK_KEY = 'zfwx_player_open';
     const HEARTBEAT_KEY = 'zfwx_player_heartbeat';
     const PROGRESS_KEY = 'zfwx_player_progress';
-    const PLAYER_COUNT_KEY = 'zfwx_player_count';
     const NEED_REFRESH_KEY = 'zfwx_need_refresh';
-    const SPEED_KEY = 'zfwx_user_speed';  // 用户手动设置的速度
+    const SPEED_KEY = 'zfwx_user_speed';
 
     let currentSpeed = CONFIG.defaultSpeed;
     let pageFullyLoaded = false;
     let videoDurationChecked = false;
     let isShortVideo = false;
+    let isLaunching = false;  // 【新增】本地锁：防止同一页面内重复触发
 
     function log(msg, color = "#00bcd4") {
         if (!CONFIG.debug) return;
-        console.log(`%c[正风V16.0]%c ${msg}`, `color:${color};font-weight:bold`, "");
+        console.log(`%c[正风V16.2]%c ${msg}`, `color:${color};font-weight:bold`, "");
         const el = document.getElementById('z-status-text');
         if (el) el.innerText = msg;
     }
@@ -69,11 +59,6 @@
         return -1;
     }
 
-    function getSpeedForProgress(progress) {
-        // 现在默认都是 2 倍速，除非用户手动调整
-        return getUserSpeed();
-    }
-
     // --- 用户速度设置 ---
     function getUserSpeed() {
         const saved = localStorage.getItem(SPEED_KEY);
@@ -85,8 +70,6 @@
         currentSpeed = speed;
         updateSpeedDisplay(speed);
         updateSpeedButtons(speed);
-
-        // 立即应用到视频
         const v = document.querySelector('video');
         if (v) {
             v.playbackRate = speed;
@@ -108,47 +91,26 @@
         return false;
     }
 
-    // --- 播放窗口计数器 ---
-    function getPlayerCount() {
-        return parseInt(localStorage.getItem(PLAYER_COUNT_KEY) || '0', 10);
-    }
+    // --- 严格单窗口锁定机制 ---
+    // 只有一个信号：LOCK_KEY + HEARTBEAT_KEY
+    // - 设置锁 = 播放窗口正在运行
+    // - tingke 打开播放前先设锁，再打开
+    // - 每次循环先检查锁 + 本地 isLaunching 标记
 
-    function incrementPlayerCount() {
-        const count = getPlayerCount() + 1;
-        localStorage.setItem(PLAYER_COUNT_KEY, count.toString());
-        return count;
-    }
-
-    function decrementPlayerCount() {
-        const count = Math.max(0, getPlayerCount() - 1);
-        localStorage.setItem(PLAYER_COUNT_KEY, count.toString());
-        return count;
-    }
-
-    function resetPlayerCount() {
-        localStorage.setItem(PLAYER_COUNT_KEY, '0');
-    }
-
-    // --- 心跳锁定机制 ---
-    function checkPlayerStatus() {
+    function isPlayerActive() {
         const locked = localStorage.getItem(LOCK_KEY) === 'true';
-        if (!locked) return 'idle';
+        if (!locked) return false;
 
         const lastHeartbeat = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0', 10);
         const now = Date.now();
 
         if (now - lastHeartbeat > CONFIG.heartbeatTimeout) {
-            log("心跳超时 (>60秒)，准备刷新...", "#4CAF50");
+            log("心跳超时 (>60秒)，解锁", "#4CAF50");
             clearPlayerLock();
-            resetPlayerCount();
-            return 'timeout';
+            return false;
         }
 
-        return 'playing';
-    }
-
-    function isPlayerWindowOpen() {
-        return checkPlayerStatus() === 'playing';
+        return true;
     }
 
     function setPlayerLock(progress) {
@@ -189,9 +151,9 @@
                 }
 
                 const hasContent = document.querySelectorAll('span.player').length > 0 ||
-                    document.querySelectorAll('.videoList').length > 0;
+                                   document.querySelectorAll('.videoList').length > 0;
                 const isLoading = document.body.innerText.includes('加载中') ||
-                    document.querySelector('.loading');
+                                  document.querySelector('.loading');
                 const minTimePassed = elapsed >= CONFIG.minDelayAfterRefresh;
 
                 if (hasContent && !isLoading && minTimePassed) {
@@ -258,7 +220,7 @@
         const currentUserSpeed = getUserSpeed();
 
         div.innerHTML = `
-            <div style="font-weight:bold;color:#FF5722;margin-bottom:8px;font-size:14px;">🚀 正风控制中心 V16.0</div>
+            <div style="font-weight:bold;color:#FF5722;margin-bottom:8px;font-size:14px;">🚀 正风控制中心 V16.2</div>
             <div style="margin:4px 0;">模式: <span style="color:#FFEB3B">${mode}</span></div>
             <div style="margin:4px 0;">倍速: <span id="z-speed-text" style="color:#4CAF50">${currentUserSpeed}x</span></div>
             <div style="margin:8px 0;">
@@ -270,12 +232,10 @@
                                color:${s === currentUserSpeed ? '#fff' : '#aaa'};">${s}x</button>
                 `).join('')}
             </div>
-            <div style="margin:4px 0;">窗口: <span id="z-count-text" style="color:#03A9F4">0</span></div>
             <div style="margin:4px 0;">状态: <span id="z-status-text" style="color:#8BC34A">初始化...</span></div>
         `;
         document.body.appendChild(div);
 
-        // 使用 addEventListener 绑定事件（避免 CSP 限制）
         CONFIG.availableSpeeds.forEach(s => {
             const btn = document.getElementById(`z-speed-btn-${s}`);
             if (btn) {
@@ -299,17 +259,12 @@
         });
     }
 
-    function updateCountDisplay() {
-        const el = document.getElementById('z-count-text');
-        if (el) el.innerText = getPlayerCount().toString();
-    }
-
     // ============================================================
     // ==================== TINGKE 页面逻辑 ====================
     // ============================================================
     async function runTingkeMode() {
         createPanel('TINGKE');
-        log("控制中心启动 (可调速)", "#FF5722");
+        log("控制中心启动 (严格单窗口)", "#FF5722");
 
         await waitForPageReady();
         pageFullyLoaded = true;
@@ -331,7 +286,11 @@
             return;
         }
 
-        updateCountDisplay();
+        // 【关键】本地锁：已经在打开窗口的过程中，跳过
+        if (isLaunching) {
+            log("正在打开窗口，跳过...", "#FF9800");
+            return;
+        }
 
         if (checkAndClearNeedRefresh()) {
             log("检测到刷新信号，3秒后刷新...", "#FF5722");
@@ -339,15 +298,8 @@
             return;
         }
 
-        const status = checkPlayerStatus();
-
-        if (status === 'timeout') {
-            log("心跳超时，刷新页面...", "#FF5722");
-            setTimeout(() => location.reload(), 1000);
-            return;
-        }
-
-        if (status === 'playing') {
+        // 检查是否有活跃的播放窗口
+        if (isPlayerActive()) {
             const lastHB = parseInt(localStorage.getItem(HEARTBEAT_KEY) || '0', 10);
             const ago = Math.round((Date.now() - lastHB) / 1000);
             const storedProgress = getStoredProgress();
@@ -357,16 +309,26 @@
             return;
         }
 
-        if (getPlayerCount() > 0) {
-            log(`已有 ${getPlayerCount()} 个窗口，等待...`, "#FF9800");
+        // 检查心跳超时（isPlayerActive 已处理，此时状态为 idle）
+        // 如果锁刚被清除，刷新页面获取最新进度
+        const lockJustCleared = !localStorage.getItem(LOCK_KEY) && 
+                                 localStorage.getItem('zfwx_was_playing') === 'true';
+        if (lockJustCleared) {
+            localStorage.removeItem('zfwx_was_playing');
+            log("播放刚结束，刷新获取最新进度...", "#FF5722");
+            setTimeout(() => location.reload(), 1000);
             return;
         }
 
+        // 空闲，找下一个
         updateSpeedDisplay(getUserSpeed());
         expandAllCourses();
 
+        // 【关键修改】不再用 setTimeout 延迟，直接执行但加本地锁
         setTimeout(() => {
-            clickFirstIncompleteLecture();
+            if (!isLaunching && !isPlayerActive()) {
+                clickFirstIncompleteLecture();
+            }
         }, 2000);
     }
 
@@ -390,7 +352,8 @@
     }
 
     function clickFirstIncompleteLecture() {
-        if (isPlayerWindowOpen() || getPlayerCount() > 0) {
+        // 三重检查：本地锁 + localStorage 锁 + 是否活跃
+        if (isLaunching || isPlayerActive()) {
             return;
         }
 
@@ -407,9 +370,13 @@
             if (progress !== -1 && progress < 100) {
                 const speed = getUserSpeed();
                 log(`发现 ${progress}% 课程，${speed}x 倍速`, "#4CAF50");
+
+                // 1. 先设本地锁（立即生效，防止同一 JS 线程内重复进入）
+                isLaunching = true;
+                // 2. 再设 localStorage 锁（跨标签页生效）
                 setPlayerLock(progress);
-                incrementPlayerCount();
-                updateCountDisplay();
+                // 3. 标记正在播放（用于刷新检测）
+                localStorage.setItem('zfwx_was_playing', 'true');
 
                 const link = btn.closest('a') || btn.querySelector('a') || btn;
                 const href = link.href || link.getAttribute('data-url');
@@ -437,9 +404,10 @@
             if (progress !== -1 && progress < 100) {
                 const speed = getUserSpeed();
                 log(`(备用) ${progress}% 课程，${speed}x`, "#4CAF50");
+
+                isLaunching = true;
                 setPlayerLock(progress);
-                incrementPlayerCount();
-                updateCountDisplay();
+                localStorage.setItem('zfwx_was_playing', 'true');
 
                 const href = btn.href || btn.getAttribute('data-url');
                 if (href) {
@@ -466,19 +434,20 @@
 
         log(`播放启动 (${storedProgress}%, ${currentSpeed}x)`, "#E91E63");
         updateSpeedDisplay(currentSpeed);
-        updateCountDisplay();
 
         document.body.addEventListener('click', enableBackgroundAudio, { once: true });
 
+        // 确保锁定
         setPlayerLock(storedProgress);
 
+        // 心跳
         setInterval(() => {
             updateHeartbeat();
         }, CONFIG.heartbeatInterval);
 
+        // 关闭前清除
         window.addEventListener('beforeunload', () => {
             clearPlayerLock();
-            decrementPlayerCount();
             setNeedRefresh();
         });
 
@@ -493,21 +462,19 @@
         const v = document.querySelector('video');
         if (!v) return;
 
-        // 检测视频时长
         if (!videoDurationChecked && v.duration && !isNaN(v.duration)) {
             videoDurationChecked = true;
             if (v.duration < CONFIG.shortVideoDuration) {
                 isShortVideo = true;
                 if (currentSpeed > CONFIG.shortVideoSpeed) {
                     currentSpeed = CONFIG.shortVideoSpeed;
-                    log(`短视频 (${Math.round(v.duration / 60)}分钟)，降为 ${currentSpeed}x`, "#FF9800");
+                    log(`短视频 (${Math.round(v.duration/60)}分钟)，降为 ${currentSpeed}x`, "#FF9800");
                 }
             } else {
-                log(`视频时长 ${Math.round(v.duration / 60)} 分钟`, "#9E9E9E");
+                log(`视频时长 ${Math.round(v.duration/60)} 分钟`, "#9E9E9E");
             }
         }
 
-        // 使用用户设置的速度（短视频除外）
         const targetSpeed = isShortVideo ? Math.min(currentSpeed, CONFIG.shortVideoSpeed) : getUserSpeed();
 
         if (v.playbackRate !== targetSpeed) {
@@ -530,7 +497,6 @@
             log("🎉 播放结束，关闭窗口...", "#4CAF50");
             setTimeout(() => {
                 clearPlayerLock();
-                decrementPlayerCount();
                 setNeedRefresh();
                 window.close();
             }, 2000);
@@ -575,7 +541,6 @@
         if (bodyText.includes('已经听完') || (bodyText.includes('听完') && (bodyText.includes('重新听') || bodyText.includes('继续听')))) {
             log("课程已完成，关闭窗口...", "#4CAF50");
             clearPlayerLock();
-            decrementPlayerCount();
             setNeedRefresh();
             window.close();
             return;
